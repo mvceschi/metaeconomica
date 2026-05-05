@@ -1,0 +1,301 @@
+<div style="padding: 1rem 0;">
+<h2 class="sr-only">A 3D potential landscape representing the discipline's space of admissible theorizing, with two kinds of external-field deformation: vacuum-selection breaking, in which the field tilts an otherwise symmetric landscape, and structural breaking, in which the field reshapes the landscape itself.</h2>
+
+<div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap;">
+  <button id="case-symmetric" style="flex: 1; min-width: 140px;">No field</button>
+  <button id="case-vacuum" style="flex: 1; min-width: 140px;">Vacuum-selection</button>
+  <button id="case-structural" style="flex: 1; min-width: 140px;">Structural</button>
+</div>
+
+<div style="display: flex; gap: 8px; margin-bottom: 12px;">
+  <button id="apply-field" style="flex: 1;">Apply field</button>
+  <button id="remove-field" style="flex: 1;">Remove field</button>
+</div>
+
+<div id="caption" style="font-size: 13px; color: var(--color-text-secondary); padding: 12px 14px; margin-bottom: 12px; background: var(--color-background-secondary); border-radius: var(--border-radius-md); min-height: 56px; line-height: 1.6;">
+  Start from the symmetric landscape with no field. Then apply a vacuum-selection field, or a structural field, and observe the difference. Drag the scene to rotate.
+</div>
+
+<div id="canvas-container" style="width: 100%; height: 460px; border-radius: var(--border-radius-lg); border: 0.5px solid var(--color-border-tertiary); overflow: hidden; background: var(--color-background-secondary);"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+  const container = document.getElementById('canvas-container');
+  const caption = document.getElementById('caption');
+  const W = container.clientWidth;
+  const H = 460;
+
+  const scene = new THREE.Scene();
+  scene.background = null;
+
+  const camera = new THREE.PerspectiveCamera(40, W/H, 0.1, 1000);
+  camera.position.set(8, 6, 9);
+  camera.lookAt(0, 0, 0);
+
+  const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true});
+  renderer.setSize(W, H);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  container.appendChild(renderer.domElement);
+
+  const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+  scene.add(ambient);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+  dir.position.set(5, 10, 7);
+  scene.add(dir);
+  const dir2 = new THREE.DirectionalLight(0xffffff, 0.25);
+  dir2.position.set(-5, 5, -7);
+  scene.add(dir2);
+
+  const VIOLET = 0xb9b5eb;
+  const VIOLET_DARK = 0x534AB7;
+  const CORAL = 0xD85A30;
+  const CORAL_DARK = 0x993C1D;
+  const BLACK = 0x000000;
+
+  const ballGeom = new THREE.SphereGeometry(0.18, 32, 32);
+  const ballMat = new THREE.MeshStandardMaterial({color: BLACK, roughness: 0.35, metalness: 0.2});
+  const ball = new THREE.Mesh(ballGeom, ballMat);
+  scene.add(ball);
+
+  const N = 60;
+  const half = 3.5;
+  const geometry = new THREE.PlaneGeometry(2*half, 2*half, N, N);
+  geometry.rotateX(-Math.PI/2);
+  const mat = new THREE.MeshStandardMaterial({
+    color: VIOLET, roughness: 0.7, metalness: 0.0,
+    transparent: true, opacity: 0.78, flatShading: false
+  });
+  const surfaceMesh = new THREE.Mesh(geometry, mat);
+  scene.add(surfaceMesh);
+
+  let wireGeom = new THREE.WireframeGeometry(geometry);
+  const wireMat = new THREE.LineBasicMaterial({color: VIOLET_DARK, opacity: 0.32, transparent: true});
+  let surfaceWire = new THREE.LineSegments(wireGeom, wireMat);
+  scene.add(surfaceWire);
+
+  let fieldArrow = null;
+
+  function symmetricZ(x, y) {
+    const wells = [
+      {cx: 0,    cy: 2.2,  depth: 1.2, width: 0.9},
+      {cx: 1.9,  cy: -1.1, depth: 1.2, width: 0.9},
+      {cx: -1.9, cy: -1.1, depth: 1.2, width: 0.9}
+    ];
+    let z = 0.6 + 0.05 * (x*x + y*y);
+    for (const w of wells) {
+      const dx = x - w.cx;
+      const dy = y - w.cy;
+      const d2 = dx*dx + dy*dy;
+      z -= w.depth * Math.exp(-d2 / (2 * w.width * w.width));
+    }
+    return z;
+  }
+
+  function vacuumZ(x, y, fieldStrength) {
+    let z = symmetricZ(x, y);
+    z -= fieldStrength * 0.55 * x;
+    return z;
+  }
+
+  function structuralZ(x, y, fieldStrength) {
+    const surviving = {cx: 1.9, cy: -1.1, depth: 1.2, width: 0.9};
+    const eliminated = [
+      {cx: 0,    cy: 2.2,  depth: 1.2, width: 0.9},
+      {cx: -1.9, cy: -1.1, depth: 1.2, width: 0.9}
+    ];
+    let z = 0.6 + 0.05 * (x*x + y*y);
+    const dx = x - surviving.cx;
+    const dy = y - surviving.cy;
+    const d2 = dx*dx + dy*dy;
+    z -= surviving.depth * Math.exp(-d2 / (2 * surviving.width * surviving.width));
+    for (const w of eliminated) {
+      const wdx = x - w.cx;
+      const wdy = y - w.cy;
+      const wd2 = wdx*wdx + wdy*wdy;
+      z -= (1 - fieldStrength) * w.depth * Math.exp(-wd2 / (2 * w.width * w.width));
+    }
+    return z;
+  }
+
+  let currentCase = 'symmetric';
+  let currentField = 0;
+  let targetField = 0;
+  let ballTarget = null;
+  let driftAnimating = false;
+
+  function getZ(x, y) {
+    if (currentCase === 'vacuum') return vacuumZ(x, y, currentField);
+    if (currentCase === 'structural') return structuralZ(x, y, currentField);
+    return symmetricZ(x, y);
+  }
+
+  function updateSurface() {
+    const positions = geometry.attributes.position;
+    for (let i = 0; i < positions.count; i++) {
+      const x = positions.getX(i);
+      const z = positions.getZ(i);
+      positions.setY(i, getZ(x, z));
+    }
+    positions.needsUpdate = true;
+    geometry.computeVertexNormals();
+
+    scene.remove(surfaceWire);
+    surfaceWire.geometry.dispose();
+    surfaceWire.geometry = new THREE.WireframeGeometry(geometry);
+    scene.add(surfaceWire);
+  }
+
+  function clearArrow() {
+    if (fieldArrow) { scene.remove(fieldArrow); fieldArrow = null; }
+  }
+
+  function makeFieldArrow(color) {
+    const dirVec = new THREE.Vector3(1, 0, 0);
+    const origin = new THREE.Vector3(-3.6, 2.2, 0);
+    const arrow = new THREE.ArrowHelper(dirVec, origin, 1.6, color, 0.35, 0.18);
+    return arrow;
+  }
+
+  function setCase(name) {
+    currentCase = name;
+    targetField = 0;
+    currentField = 0;
+    clearArrow();
+    updateSurface();
+    if (name === 'symmetric') {
+      ball.position.set(0, getZ(0, 0) + 0.18, 0);
+      caption.innerHTML = '<span style="font-weight: 500;">No field.</span> The discipline\'s symmetric landscape: three equivalent minima representing admissible theoretical configurations. The ball at the saddle has no internal reason to prefer one over another.';
+    } else if (name === 'vacuum') {
+      ball.position.set(0, getZ(0, 0) + 0.18, 0);
+      caption.innerHTML = '<span style="font-weight: 500;">Vacuum-selection breaking.</span> Click <em>Apply field</em> to introduce sustained external pressure. The landscape will tilt; one minimum will become preferred. The other minima remain admissible — the underlying space is unchanged.';
+    } else if (name === 'structural') {
+      ball.position.set(0, getZ(0, 0) + 0.18, 0);
+      caption.innerHTML = '<span style="font-weight: 500;">Structural breaking.</span> Click <em>Apply field</em> to introduce a stronger, transformative pressure. The field will reshape the landscape itself: some minima are eliminated, others remain. The space of admissible theorizing has been reduced.';
+    }
+  }
+
+  function applyField() {
+    if (currentCase === 'symmetric') {
+      caption.innerHTML = '<span style="font-weight: 500;">Select a case.</span> Choose <em>Vacuum-selection</em> or <em>Structural</em> first to apply a field.';
+      return;
+    }
+    targetField = 1;
+    clearArrow();
+    if (currentCase === 'vacuum') {
+      fieldArrow = makeFieldArrow(CORAL_DARK);
+      scene.add(fieldArrow);
+      caption.innerHTML = '<span style="font-weight: 500;">Vacuum-selection.</span> Field applied. Notice that all three wells are still present in the surface — the field has only tilted the landscape so that one minimum becomes deeper. The other configurations remain logically admissible.';
+      ballTarget = new THREE.Vector3(1.9, 0, -1.1);
+      driftAnimating = true;
+    } else {
+      fieldArrow = makeFieldArrow(CORAL_DARK);
+      scene.add(fieldArrow);
+      caption.innerHTML = '<span style="font-weight: 500;">Structural.</span> Field applied. The other two wells are dissolving; only the surviving minimum remains. The space of admissible configurations has been reduced. Removing the field will not restore the eliminated wells.';
+      ballTarget = new THREE.Vector3(1.9, 0, -1.1);
+      driftAnimating = true;
+    }
+  }
+
+  function removeField() {
+    if (currentCase === 'vacuum') {
+      targetField = 0;
+      clearArrow();
+      caption.innerHTML = '<span style="font-weight: 500;">Vacuum-selection, field removed.</span> The landscape returns to its symmetric form. The ball can drift back among the three equivalent minima. The breaking is reversible.';
+      ballTarget = new THREE.Vector3(0, 0, 0);
+      driftAnimating = true;
+    } else if (currentCase === 'structural') {
+      targetField = 0;
+      clearArrow();
+      caption.innerHTML = '<span style="font-weight: 500;">Structural, field removed.</span> Notice: even with the field gone, the eliminated wells are not fully restored. The structural change persists. Recovering the prior space requires deliberate reconstruction, not merely removing the pressure.';
+    }
+  }
+
+  document.getElementById('case-symmetric').addEventListener('click', () => setCase('symmetric'));
+  document.getElementById('case-vacuum').addEventListener('click', () => setCase('vacuum'));
+  document.getElementById('case-structural').addEventListener('click', () => setCase('structural'));
+  document.getElementById('apply-field').addEventListener('click', applyField);
+  document.getElementById('remove-field').addEventListener('click', removeField);
+
+  let isDragging = false;
+  let prevMouseX = 0, prevMouseY = 0;
+  let theta = Math.atan2(camera.position.x, camera.position.z);
+  let phi = Math.atan2(camera.position.y, Math.sqrt(camera.position.x*camera.position.x + camera.position.z*camera.position.z));
+  const cameraRadius = camera.position.length();
+
+  function updateCamera() {
+    camera.position.x = cameraRadius * Math.cos(phi) * Math.sin(theta);
+    camera.position.y = cameraRadius * Math.sin(phi);
+    camera.position.z = cameraRadius * Math.cos(phi) * Math.cos(theta);
+    camera.lookAt(0, 0, 0);
+  }
+
+  container.addEventListener('mousedown', (e) => {
+    isDragging = true;
+    prevMouseX = e.clientX;
+    prevMouseY = e.clientY;
+  });
+  window.addEventListener('mouseup', () => { isDragging = false; });
+  window.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const dx = e.clientX - prevMouseX;
+    const dy = e.clientY - prevMouseY;
+    theta -= dx * 0.008;
+    phi += dy * 0.008;
+    phi = Math.max(0.1, Math.min(Math.PI/2 - 0.1, phi));
+    prevMouseX = e.clientX;
+    prevMouseY = e.clientY;
+    updateCamera();
+  });
+
+  container.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 1) {
+      isDragging = true;
+      prevMouseX = e.touches[0].clientX;
+      prevMouseY = e.touches[0].clientY;
+    }
+  });
+  window.addEventListener('touchend', () => { isDragging = false; });
+  window.addEventListener('touchmove', (e) => {
+    if (!isDragging || e.touches.length !== 1) return;
+    const dx = e.touches[0].clientX - prevMouseX;
+    const dy = e.touches[0].clientY - prevMouseY;
+    theta -= dx * 0.008;
+    phi += dy * 0.008;
+    phi = Math.max(0.1, Math.min(Math.PI/2 - 0.1, phi));
+    prevMouseX = e.touches[0].clientX;
+    prevMouseY = e.touches[0].clientY;
+    updateCamera();
+  });
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (Math.abs(currentField - targetField) > 0.005) {
+      currentField += (targetField - currentField) * 0.04;
+      updateSurface();
+    }
+    if (driftAnimating && ballTarget) {
+      const dx = ballTarget.x - ball.position.x;
+      const dz = ballTarget.z - ball.position.z;
+      const dist = Math.sqrt(dx*dx + dz*dz);
+      if (dist > 0.05) {
+        ball.position.x += dx * 0.04;
+        ball.position.z += dz * 0.04;
+        ball.position.y = getZ(ball.position.x, ball.position.z) + 0.18;
+      } else {
+        ball.position.x = ballTarget.x;
+        ball.position.z = ballTarget.z;
+        ball.position.y = getZ(ball.position.x, ball.position.z) + 0.18;
+        driftAnimating = false;
+      }
+    } else {
+      ball.position.y = getZ(ball.position.x, ball.position.z) + 0.18;
+    }
+    renderer.render(scene, camera);
+  }
+
+  setCase('symmetric');
+  animate();
+})();
+</script>
+</div>
